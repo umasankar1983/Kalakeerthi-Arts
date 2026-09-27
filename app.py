@@ -114,6 +114,16 @@ def generate_wa_link(phone, text):
         clean_phone = f"91{clean_phone}"
     return f"https://wa.me/{clean_phone}?text={text.replace(' ', '%20')}"
 
+ALL_ACADEMY_DISCIPLINES = [
+    "Bharatanatyam (Regular)",
+    "Carnatic Vocal",
+    "Zumba Fitness",
+    "Western Dance",
+    "Garba Night (Oct 17 Event)",
+    "Navratri Workshop",
+    "Annual Recital"
+]
+
 # ==========================================
 # MODULE 1: PUBLIC WEBSITE & HERO LANDING
 # ==========================================
@@ -277,16 +287,17 @@ def student_portal():
 def admin_crm():
     st.markdown("<h2 style='font-family:Playfair Display, serif; color:#7B1113;'>Admin CRM & Operations Command</h2>", unsafe_allow_html=True)
 
-    tab_triage, tab_followup, tab_edit, tab_fees, tab_import = st.tabs([
+    tab_triage, tab_followup, tab_edit, tab_fees, tab_import, tab_analytics = st.tabs([
         "📊 Lead Triage & Conversion",
         "📞 Follow-up Command Center",
         "✏️ Edit Lead Records",
         "💰 Student & Event Fee Manager",
-        "📥 Data Importer"
+        "📥 Data Importer",
+        "📈 Analytics"
     ])
 
     # ----------------------------------------------------
-    # TAB 1: LEAD TRIAGE & DUAL CONVERSION (CLASSES & EVENTS)
+    # TAB 1: LEAD TRIAGE, DUAL CONVERSION & CSV EXPORT
     # ----------------------------------------------------
     with tab_triage:
         st.markdown("#### Incoming Enquiries Pipeline")
@@ -344,9 +355,19 @@ def admin_crm():
                 df_view = pd.DataFrame(leads_data)
                 df_view["Select"] = False
                 
-                cols_order = ["Select", "student_token", "name", "phone", "course", "preferred_time", "status", "notes"]
+                cols_order = ["Select", "student_token", "name", "phone", "course", "preferred_time", "status", "follow_up_date", "notes"]
                 existing_cols = [c for c in cols_order if c in df_view.columns]
                 
+                # CSV EXPORT FEATURE
+                export_cols = [c for c in ["student_token", "name", "phone", "course", "preferred_time", "status", "follow_up_date", "notes"] if c in df_view.columns]
+                csv_bytes = df_view[export_cols].to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Export Filtered Leads to CSV",
+                    data=csv_bytes,
+                    file_name=f"kalakeerthi_leads_{date.today().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+
                 edited_df = st.data_editor(
                     df_view[existing_cols],
                     column_config={
@@ -357,9 +378,10 @@ def admin_crm():
                         "course": st.column_config.TextColumn("Course / Event"),
                         "preferred_time": st.column_config.TextColumn("Timing"),
                         "status": st.column_config.TextColumn("Current Status"),
+                        "follow_up_date": st.column_config.TextColumn("Next Follow-up"),
                         "notes": st.column_config.TextColumn("Inquiry Notes")
                     },
-                    disabled=["student_token", "name", "phone", "course", "preferred_time", "status", "notes"],
+                    disabled=["student_token", "name", "phone", "course", "preferred_time", "status", "follow_up_date", "notes"],
                     hide_index=True,
                     use_container_width=True,
                     key="lead_editor_grid"
@@ -396,7 +418,6 @@ def admin_crm():
                                         "fee_status": "Pending",
                                         "fee_due_date": str(date.today() + timedelta(days=7))
                                     }]).execute()
-                                    # Update lead status gracefully
                                     current_st = item.get("status", "")
                                     new_status = "Both (Student & Event)" if "Attendee" in current_st else "Enrolled Student"
                                     supabase.table("leads").update({"status": new_status}).eq("id", item["raw_id"]).execute()
@@ -430,7 +451,6 @@ def admin_crm():
                                         "payment_status": "Unpaid",
                                         "amount_paid": 0
                                     }]).execute()
-                                    # Update status gracefully
                                     current_st = item.get("status", "")
                                     new_status = "Both (Student & Event)" if "Student" in current_st else "Event Attendee"
                                     supabase.table("leads").update({"status": new_status}).eq("id", item["raw_id"]).execute()
@@ -452,7 +472,6 @@ def admin_crm():
         st.markdown("#### Follow-up Command Center")
         st.caption("Direct messaging hub with pre-configured filters and 1-click WhatsApp outreach.")
 
-        # Multi-Variable Filtering Bar
         fl1, fl2, fl3 = st.columns([1.5, 1.5, 2])
         with fl1:
             fu_status = st.multiselect("Lead Status", ["Hot", "Warm", "Cold", "Enrolled Student", "Event Attendee", "Both (Student & Event)"], default=["Hot", "Warm"])
@@ -467,7 +486,6 @@ def admin_crm():
                 fu_query = fu_query.in_("status", fu_status)
             fu_records = fu_query.execute().data or []
 
-            # Python filter
             filtered_fu = []
             for r in fu_records:
                 c_name = str(r.get("course", "") or r.get("preferred_class_type", ""))
@@ -525,7 +543,9 @@ def admin_crm():
                         st.markdown(f"📞 `{lead_phone}` | <span class='{badge_class}'>{lead_status}</span>", unsafe_allow_html=True)
                     with c_details:
                         st.markdown(f"**Target:** {lead_course}")
-                        st.caption(lead_notes[:130] + ("..." if len(str(lead_notes)) > 130 else ""))
+                        if lead.get("follow_up_date"):
+                            st.caption(f"🗓️ Follow-up Scheduled: **{lead.get('follow_up_date')}**")
+                        st.caption(lead_notes[:120] + ("..." if len(str(lead_notes)) > 120 else ""))
                     with c_action:
                         message = f"Hello {lead_name}, greetings from Kalakeerthi Arts! Regarding your inquiry for {lead_course}, we would love to invite you to our upcoming session."
                         wa_url = generate_wa_link(lead_phone, message)
@@ -537,43 +557,84 @@ def admin_crm():
             st.error(f"Error loading follow-up board: {e}")
 
     # ----------------------------------------------------
-    # TAB 3: EDIT LEAD DETAILS
+    # TAB 3: EDIT LEAD DETAILS & DISCIPLINE SHIFTING
     # ----------------------------------------------------
     with tab_edit:
-        st.markdown("#### Modify Lead Profile & Status")
+        st.markdown("#### Modify Lead Profile & Course/Event Disciplines")
         try:
-            all_leads_res = supabase.table("leads").select("id, name, full_name, phone, course, status, notes").order("id", desc=True).limit(50).execute().data or []
+            all_leads_res = supabase.table("leads").select("id, name, full_name, phone, course, status, notes, follow_up_date").order("id", desc=True).limit(60).execute().data or []
             if all_leads_res:
                 edit_map = {f"{clean_id(l['id'])} — {l.get('name') or l.get('full_name')} ({l.get('phone')})": l for l in all_leads_res}
                 choice = st.selectbox("Select Candidate to Update", list(edit_map.keys()))
                 sel_lead = edit_map[choice]
 
+                # Identify existing courses enrolled
+                raw_c = str(sel_lead.get("course") or "")
+                existing_selected = [c for c in ALL_ACADEMY_DISCIPLINES if c.lower() in raw_c.lower()]
+                if not existing_selected and raw_c:
+                    existing_selected = [ALL_ACADEMY_DISCIPLINES[0]]
+
                 with st.form("lead_edit_form"):
                     e1, e2 = st.columns(2)
                     with e1:
-                        up_name = st.text_input("Name", value=sel_lead.get("name") or sel_lead.get("full_name") or "")
-                        up_phone = st.text_input("Mobile / WhatsApp", value=sel_lead.get("phone") or "")
-                        up_course = st.text_input("Target Program / Event", value=sel_lead.get("course") or "")
+                        up_name = st.text_input("Candidate Name", value=sel_lead.get("name") or sel_lead.get("full_name") or "")
+                        up_phone = st.text_input("Mobile / WhatsApp Number", value=sel_lead.get("phone") or "")
+                        
+                        # MULTI-DISCIPLINE SHIFTING / ENROLLMENT
+                        selected_disciplines = st.multiselect(
+                            "Enrolled Disciplines & Events (Shift or Multi-Enroll)",
+                            options=ALL_ACADEMY_DISCIPLINES,
+                            default=existing_selected,
+                            help="Add or remove disciplines to shift this lead to new groups or enroll simultaneously."
+                        )
+                        
+                        # Follow-Up Date Picker
+                        cur_fdate = date.today() + timedelta(days=2)
+                        if sel_lead.get("follow_up_date"):
+                            try:
+                                cur_fdate = date.fromisoformat(str(sel_lead.get("follow_up_date")))
+                            except Exception:
+                                pass
+                        up_follow_up_date = st.date_input("🗓️ Next Follow-up Date", value=cur_fdate)
+
                     with e2:
                         s_options = ["Hot", "Warm", "Cold", "Enrolled Student", "Event Attendee", "Both (Student & Event)", "Closed"]
                         cur_stat = sel_lead.get("status", "Cold")
                         idx = s_options.index(cur_stat) if cur_stat in s_options else 2
                         up_status = st.selectbox("Lead Pipeline Status", s_options, index=idx)
+                        
+                        clear_all = st.checkbox("❌ Remove candidate from all disciplines / events", value=False)
                         up_notes = st.text_area("Counselor Notes", value=sel_lead.get("notes") or "")
 
-                    if st.form_submit_button("Save Profile Updates", type="primary"):
-                        clean_p = "".join(filter(str.isdigit, up_phone))
-                        supabase.table("leads").update({
-                            "name": up_name,
-                            "full_name": up_name,
-                            "phone": clean_p,
-                            "whatsapp_number": clean_p,
-                            "course": up_course,
-                            "status": up_status,
-                            "notes": up_notes
-                        }).eq("id", sel_lead["id"]).execute()
-                        st.success("Lead details successfully updated!")
-                        st.rerun()
+                    btn_c1, btn_c2 = st.columns([1, 1])
+                    with btn_c1:
+                        submit_update = st.form_submit_button("Save Updates", type="primary", use_container_width=True)
+
+                if submit_update:
+                    clean_p = "".join(filter(str.isdigit, up_phone))
+                    
+                    if clear_all:
+                        final_course = "None (Removed from all disciplines)"
+                        final_status = "Closed"
+                    else:
+                        final_course = ", ".join(selected_disciplines) if selected_disciplines else "General Inquiry"
+                        final_status = up_status
+
+                    updated_note = f"{up_notes}\n[Update {date.today()}]: Next follow-up {up_follow_up_date.isoformat()}."
+                    
+                    supabase.table("leads").update({
+                        "name": up_name,
+                        "full_name": up_name,
+                        "phone": clean_p,
+                        "whatsapp_number": clean_p,
+                        "course": final_course,
+                        "status": final_status,
+                        "follow_up_date": up_follow_up_date.isoformat(),
+                        "notes": updated_note.strip()
+                    }).eq("id", sel_lead["id"]).execute()
+                    
+                    st.success("Lead profile and disciplines updated successfully!")
+                    st.rerun()
             else:
                 st.info("No leads found to edit.")
         except Exception as e:
@@ -736,6 +797,56 @@ def admin_crm():
                             st.rerun()
             except Exception as e:
                 st.error(f"Error during import: {e}")
+
+    # ----------------------------------------------------
+    # TAB 6: ADMIN ANALYTICS & VISUAL REPORTING
+    # ----------------------------------------------------
+    with tab_analytics:
+        st.markdown("#### Academy Operations & Lead Analytics")
+        try:
+            leads_res = supabase.table("leads").select("status, course, created_at").execute().data or []
+            if leads_res:
+                df_an = pd.DataFrame(leads_res)
+                
+                # Clean course labels for aggregation
+                df_an["Clean_Course"] = df_an["course"].fillna("Unspecified").apply(
+                    lambda x: "Garba Night" if "garba" in str(x).lower() 
+                    else ("Bharatanatyam" if "bharat" in str(x).lower() 
+                    else ("Zumba" if "zumba" in str(x).lower() 
+                    else ("Carnatic" if "carnatic" in str(x).lower() 
+                    else ("Western Dance" if "western" in str(x).lower() else "Group / Other"))))
+                )
+
+                # Key Performance Metrics
+                ak1, ak2, ak3 = st.columns(3)
+                with ak1:
+                    st.metric("Total Candidates Tracked", len(df_an))
+                with ak2:
+                    hot_ratio = round((sum(df_an["status"] == "Hot") / len(df_an)) * 100, 1) if len(df_an) else 0
+                    st.metric("Hot Lead Velocity", f"{hot_ratio}%")
+                with ak3:
+                    converted_total = sum(df_an["status"].str.contains("Enrolled|Attendee|Both", case=False, na=False))
+                    st.metric("Total Converted Enrollments", converted_total)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Visual Bar Charts
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    st.markdown("##### Inquiries by Pipeline Status")
+                    status_counts = df_an["status"].value_counts().reset_index()
+                    status_counts.columns = ["Status", "Count"]
+                    st.bar_chart(status_counts.set_index("Status"), color="#7B1113")
+
+                with col_c2:
+                    st.markdown("##### Inquiries by Academy Course / Event")
+                    course_counts = df_an["Clean_Course"].value_counts().reset_index()
+                    course_counts.columns = ["Course / Event", "Count"]
+                    st.bar_chart(course_counts.set_index("Course / Event"), color="#D4AF37")
+            else:
+                st.info("No data available to generate analytics. Import leads or capture registrations first.")
+        except Exception as e:
+            st.error(f"Error computing analytics: {e}")
 
 # ==========================================
 # SIDEBAR NAVIGATION
